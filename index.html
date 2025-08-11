@@ -196,44 +196,72 @@
                 const csvData = await response.text();
                 const rows = csvData.trim().split('\n');
                 
-                // REPARACION: Se busca dinámicamente la fila de encabezado para mayor robustez.
-                let dataStartIndex = -1;
+                // REPARACION: Se busca dinámicamente la fila de encabezado de los meses y de los campos.
+                let monthHeaderRowIndex = -1;
+                let fieldHeaderRowIndex = -1;
+
                 for (let i = 0; i < rows.length; i++) {
-                    // Buscamos una fila que contenga "GRADO" y "DNI" para asegurarnos que es la correcta
                     const upperRow = rows[i].trim().toUpperCase();
+                    if (upperRow.includes("AGOSTO") && !upperRow.includes("GRADO")) {
+                        monthHeaderRowIndex = i;
+                    }
                     if (upperRow.includes("GRADO") && upperRow.includes("DNI")) {
-                        dataStartIndex = i + 1;
+                        fieldHeaderRowIndex = i;
                         break;
                     }
                 }
 
-                if (dataStartIndex === -1) {
-                    throw new Error("No se encontró la fila de encabezado en la planilla.");
+                if (fieldHeaderRowIndex === -1) {
+                    throw new Error("No se encontró la fila de encabezado ('GRADO', 'DNI', etc.) en la planilla.");
                 }
+
+                const monthHeaderRow = rows[monthHeaderRowIndex].trim().split(',');
+                const fieldHeaderRow = rows[fieldHeaderRowIndex].trim().split(',');
+                const dataStartIndex = fieldHeaderRowIndex + 1;
+                
+                // Mapear los meses a sus columnas correspondientes
+                const monthColumnMap = {};
+                let currentMonth = '';
+                monthHeaderRow.forEach((cell, index) => {
+                    if (cell.trim() !== '') {
+                        currentMonth = cell.trim().toUpperCase();
+                    }
+                    if (currentMonth && !monthColumnMap[currentMonth]) {
+                        monthColumnMap[currentMonth] = {};
+                    }
+                    if(currentMonth) {
+                        const fieldName = fieldHeaderRow[index] ? fieldHeaderRow[index].trim().toLowerCase() : '';
+                        if (fieldName === 'cuota') monthColumnMap[currentMonth].cuotaIndex = index;
+                        if (fieldName === 'donacion') monthColumnMap[currentMonth].donacionIndex = index;
+                        if (fieldName === 'fecha pago') monthColumnMap[currentMonth].fechaPagoIndex = index;
+                    }
+                });
 
                 const dataRows = rows.slice(dataStartIndex);
                 
                 sociosData = dataRows.map(row => {
-                    // Usamos una expresión regular para separar por comas, pero ignorar las comas dentro de comillas
-                    const columns = row.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g) || [];
-                    
+                    const columns = row.split(',');
                     if (columns.length > 4 && columns[4] && String(columns[4]).trim()) {
-                        return {
+                        const socio = {
                             gradoCurso: columns[0] || '',
                             nombre: columns[3] || '',
                             dni: String(columns[4]).trim(),
-                            telefono: columns[9] ? String(columns[9]).replace(/\s/g, '') : null,
-                            pagos: {
-                                'AGOSTO':     { cuota: columns[16] || '0', donacion: columns[17] || '0', fechaPago: columns[18] || null },
-                                'SEPTIEMBRE': { cuota: columns[20] || '0', donacion: columns[21] || '0', fechaPago: columns[22] || null },
-                                'OCTUBRE':    { cuota: columns[24] || '0', donacion: columns[25] || '0', fechaPago: columns[26] || null },
-                                'NOVIEMBRE':  { cuota: columns[28] || '0', donacion: columns[29] || '0', fechaPago: columns[30] || null },
-                                'DICIEMBRE':  { cuota: columns[32] || '0', donacion: columns[33] || '0', fechaPago: columns[34] || null }
-                            }
+                            telefono: columns[9] ? String(columns[9]).replace(/\D/g, '') : null,
+                            pagos: {}
                         };
+
+                        for (const month in monthColumnMap) {
+                            const indices = monthColumnMap[month];
+                            socio.pagos[month] = {
+                                cuota: (columns[indices.cuotaIndex] || '0').replace(/\D/g, ''),
+                                donacion: (columns[indices.donacionIndex] || '0').replace(/\D/g, ''),
+                                fechaPago: columns[indices.fechaPagoIndex] || null
+                            };
+                        }
+                        return socio;
                     }
                     return null;
-                }).filter(s => s); // Filtra cualquier fila que haya resultado nula (inválida)
+                }).filter(s => s);
 
                 if (sociosData.length > 0) {
                     showNotification(`Se cargaron ${sociosData.length} socios correctamente.`);
