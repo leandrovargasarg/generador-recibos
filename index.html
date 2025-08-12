@@ -6,7 +6,8 @@
     <title>Generador de Recibos - Cuota Social</title>
     <!-- Incluyendo Tailwind CSS para el diseño -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Incluyendo las librerías para PDF (html2canvas, jsPDF) -->
+    <!-- Incluyendo las librerías para Excel (xlsx) y PDF (html2canvas, jsPDF) -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -56,8 +57,30 @@
         <div class="bg-white p-8 rounded-2xl shadow-lg">
             <div class="text-center mb-8">
                 <h1 class="text-3xl font-bold text-gray-800">Generador de Recibos - Cuota Social</h1>
-                <p class="text-gray-500 mt-2">Los datos se cargan automáticamente desde la planilla en línea.</p>
+                <p class="text-gray-500 mt-2">Selecciona un origen de datos y busca un socio.</p>
             </div>
+
+            <!-- Selector de origen de datos -->
+            <div class="mb-6">
+                <label class="block text-sm font-medium text-gray-700 mb-2">1. Origen de los Datos:</label>
+                <div class="flex items-center space-x-4">
+                    <div>
+                        <input type="radio" id="sourceOnline" name="dataSource" value="online" checked class="h-4 w-4 text-blue-600 border-gray-300 focus:ring-blue-500">
+                        <label for="sourceOnline" class="ml-2 text-sm text-gray-700">Usar Planilla en Línea (Google Sheets)</label>
+                    </div>
+                    <div>
+                        <input type="radio" id="sourceLocal" name="dataSource" value="local" class="h-4 w-4 text-blue-600 border-gray-300 focus:ring-blue-500">
+                        <label for="sourceLocal" class="ml-2 text-sm text-gray-700">Cargar Archivo Local (.xlsx)</label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Carga de archivo Excel (oculto por defecto) -->
+            <div id="localFileLoader" class="mb-6 hidden">
+                <label for="archivoExcel" class="block text-sm font-medium text-gray-700 mb-2">Cargar archivo `socios_coop.xlsx`:</label>
+                <input type="file" id="archivoExcel" accept=".xlsx" class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+            </div>
+
 
             <!-- Formulario de Recibo -->
             <form id="reciboForm" class="space-y-6">
@@ -65,7 +88,7 @@
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <!-- Campo de búsqueda de DNI -->
                     <div class="relative">
-                        <label for="dniSearchInput" class="block text-sm font-medium text-gray-700">1. Buscar DNI del Aportante:</label>
+                        <label for="dniSearchInput" class="block text-sm font-medium text-gray-700">2. Buscar DNI del Aportante:</label>
                         <input type="text" id="dniSearchInput" placeholder="Cargando datos de socios..." class="mt-1 block w-full px-3 py-2 bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-200" required disabled autocomplete="off">
                         <div id="dniSearchResults" class="absolute z-10 w-full bg-white border border-gray-300 rounded-md mt-1 max-h-48 overflow-y-auto hidden">
                             <!-- Los resultados de la búsqueda aparecerán aquí -->
@@ -174,8 +197,101 @@
             return new Date().toISOString().split('T')[0];
         }
 
+        // --- Función unificada para procesar los datos de la planilla ---
+        function processSheetData(rows) {
+            let monthHeaderRowIndex = -1;
+            let fieldHeaderRowIndex = -1;
+
+            for (let i = 0; i < rows.length; i++) {
+                const upperRow = rows[i].join(',').trim().toUpperCase();
+                if (upperRow.includes("AGOSTO") && !upperRow.includes("GRADO")) {
+                    monthHeaderRowIndex = i;
+                }
+                if (upperRow.includes("GRADO") && upperRow.includes("DNI")) {
+                    fieldHeaderRowIndex = i;
+                    break;
+                }
+            }
+
+            if (fieldHeaderRowIndex === -1 || monthHeaderRowIndex === -1) {
+                throw new Error("No se encontraron las filas de encabezado en la planilla.");
+            }
+
+            const monthHeaderRow = rows[monthHeaderRowIndex];
+            const fieldHeaderRow = rows[fieldHeaderRowIndex];
+            const dataStartIndex = fieldHeaderRowIndex + 1;
+
+            const monthColumnMap = {};
+            let currentMonth = '';
+            monthHeaderRow.forEach((cell, index) => {
+                if (String(cell).trim() !== '') {
+                    currentMonth = String(cell).trim().toUpperCase();
+                }
+                if (currentMonth && !monthColumnMap[currentMonth]) {
+                    monthColumnMap[currentMonth] = {};
+                }
+                if (currentMonth) {
+                    const fieldName = fieldHeaderRow[index] ? String(fieldHeaderRow[index]).trim().toLowerCase() : '';
+                    if (fieldName === 'cuota') monthColumnMap[currentMonth].cuotaIndex = index;
+                    if (fieldName === 'donacion') monthColumnMap[currentMonth].donacionIndex = index;
+                    if (fieldName === 'fecha pago') monthColumnMap[currentMonth].fechaPagoIndex = index;
+                }
+            });
+
+            const dataRows = rows.slice(dataStartIndex);
+            
+            sociosData = dataRows.map(columns => {
+                if (columns.length > 4 && columns[4] && String(columns[4]).trim()) {
+                    const socio = {
+                        gradoCurso: columns[0] || '',
+                        nombre: columns[3] || '',
+                        dni: String(columns[4]).trim(),
+                        telefono: columns[9] ? String(columns[9]).replace(/\D/g, '') : null,
+                        pagos: {}
+                    };
+                    for (const month in monthColumnMap) {
+                        const indices = monthColumnMap[month];
+                        socio.pagos[month] = {
+                            cuota: (columns[indices.cuotaIndex] || '0').replace(/\D/g, ''),
+                            donacion: (columns[indices.donacionIndex] || '0').replace(/\D/g, ''),
+                            fechaPago: columns[indices.fechaPagoIndex] || null
+                        };
+                    }
+                    return socio;
+                }
+                return null;
+            }).filter(s => s);
+            
+            if (sociosData.length > 0) {
+                showNotification(`Se cargaron ${sociosData.length} socios correctamente.`);
+                dniSearchInput.disabled = false;
+                dniSearchInput.placeholder = "Escribe para buscar...";
+            } else {
+                showNotification("No se encontraron socios en la planilla.", true);
+                dniSearchInput.placeholder = "Error al cargar datos";
+            }
+        }
+
+        // --- Cargar datos desde Google Sheets ---
+        async function loadFromGoogleSheets() {
+            dniSearchInput.placeholder = "Cargando datos de socios...";
+            dniSearchInput.disabled = true;
+            const googleSheetUrl = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTnI6tprCDmbACfSNauw9vGj74MKAPr8PLaL6Xt-AxqsMHSvsukmz-m1gCt8105AA/pub?gid=709970478&single=true&output=csv";
+            try {
+                const response = await fetch(`${googleSheetUrl}&t=${new Date().getTime()}`);
+                if (!response.ok) throw new Error(`Error de red: ${response.statusText}`);
+                const csvData = await response.text();
+                const rows = csvData.trim().split('\n').map(row => row.split(','));
+                processSheetData(rows);
+            } catch (error) {
+                console.error("Error al cargar la planilla desde Google Sheets:", error);
+                showNotification("No se pudo cargar la planilla. Revisa el enlace y la conexion.", true);
+                dniSearchInput.placeholder = "Error de conexion";
+            }
+        }
+        
         // --- Lógica de inicialización al cargar la página ---
-        document.addEventListener('DOMContentLoaded', async (event) => {
+        document.addEventListener('DOMContentLoaded', () => {
             const meses = ['ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO', 'JULIO', 'AGOSTO', 'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE'];
             const mesActual = new Date().getMonth();
             const mesSelect = document.getElementById('mesPago');
@@ -186,97 +302,46 @@
                 mesSelect.value = 'AGOSTO';
             }
             document.getElementById('fechaPago').valueAsDate = new Date();
-
-            const googleSheetUrl = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTnI6tprCDmbACfSNauw9vGj74MKAPr8PLaL6Xt-AxqsMHSvsukmz-m1gCt8105AA/pub?gid=709970478&single=true&output=csv";
-
-            try {
-                const response = await fetch(`${googleSheetUrl}&t=${new Date().getTime()}`);
-                if (!response.ok) throw new Error(`Error de red: ${response.statusText}`);
-                
-                const csvData = await response.text();
-                const rows = csvData.trim().split('\n');
-                
-                // REPARACION: Lógica de lectura de encabezados mejorada
-                let monthHeaderRowIndex = -1;
-                let fieldHeaderRowIndex = -1;
-
-                for (let i = 0; i < rows.length; i++) {
-                    const upperRow = rows[i].trim().toUpperCase();
-                    if (upperRow.includes("AGOSTO") && !upperRow.includes("GRADO")) {
-                        monthHeaderRowIndex = i;
-                    }
-                    if (upperRow.includes("GRADO") && upperRow.includes("DNI")) {
-                        fieldHeaderRowIndex = i;
-                        break; 
-                    }
-                }
-
-                if (fieldHeaderRowIndex === -1 || monthHeaderRowIndex === -1) {
-                    throw new Error("No se encontraron las filas de encabezado en la planilla.");
-                }
-
-                const monthHeaderRow = rows[monthHeaderRowIndex].trim().split(',');
-                const fieldHeaderRow = rows[fieldHeaderRowIndex].trim().split(',');
-                const dataStartIndex = fieldHeaderRowIndex + 1;
-                
-                const monthColumnMap = {};
-                let currentMonth = '';
-                monthHeaderRow.forEach((cell, index) => {
-                    if (cell.trim() !== '') {
-                        currentMonth = cell.trim().toUpperCase();
-                    }
-                    if (currentMonth && !monthColumnMap[currentMonth]) {
-                        monthColumnMap[currentMonth] = {};
-                    }
-                    if(currentMonth) {
-                        const fieldName = fieldHeaderRow[index] ? fieldHeaderRow[index].trim().toLowerCase() : '';
-                        if (fieldName === 'cuota') monthColumnMap[currentMonth].cuotaIndex = index;
-                        if (fieldName === 'donacion') monthColumnMap[currentMonth].donacionIndex = index;
-                        if (fieldName === 'fecha pago') monthColumnMap[currentMonth].fechaPagoIndex = index;
-                    }
-                });
-
-                const dataRows = rows.slice(dataStartIndex);
-                
-                sociosData = dataRows.map(row => {
-                    const columns = row.split(',');
-                    if (columns.length > 4 && columns[4] && String(columns[4]).trim()) {
-                        const socio = {
-                            gradoCurso: columns[0] || '',
-                            nombre: columns[3] || '',
-                            dni: String(columns[4]).trim(),
-                            telefono: columns[9] ? String(columns[9]).replace(/\D/g, '') : null,
-                            pagos: {}
-                        };
-
-                        for (const month in monthColumnMap) {
-                            const indices = monthColumnMap[month];
-                            socio.pagos[month] = {
-                                cuota: (columns[indices.cuotaIndex] || '0').replace(/\D/g, ''),
-                                donacion: (columns[indices.donacionIndex] || '0').replace(/\D/g, ''),
-                                fechaPago: columns[indices.fechaPagoIndex] || null
-                            };
-                        }
-                        return socio;
-                    }
-                    return null;
-                }).filter(s => s);
-
-                if (sociosData.length > 0) {
-                    showNotification(`Se cargaron ${sociosData.length} socios correctamente.`);
-                    dniSearchInput.disabled = false;
-                    dniSearchInput.placeholder = "Escribe para buscar...";
-                } else {
-                    showNotification("No se encontraron socios en la planilla online.", true);
-                    dniSearchInput.placeholder = "Error al cargar datos";
-                }
-            } catch (error) {
-                console.error("Error al cargar la planilla desde Google Sheets:", error);
-                showNotification("No se pudo cargar la planilla. Revisa el enlace y la conexion.", true);
-                dniSearchInput.placeholder = "Error de conexion";
-            }
+            
+            // Cargar desde Google Sheets por defecto
+            loadFromGoogleSheets();
         });
-        
+
+        // --- Lógica para cargar archivo local ---
+        document.getElementById("archivoExcel").addEventListener("change", function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: "array" });
+                    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const json = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+                    processSheetData(json);
+                } catch (error) {
+                    console.error("Error al leer el archivo Excel:", error);
+                    showNotification("Hubo un error al procesar el archivo. Verifique el formato.", true);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        // --- Lógica para el selector de origen de datos ---
+        document.querySelectorAll('input[name="dataSource"]').forEach(radio => {
+            radio.addEventListener('change', function() {
+                if (this.value === 'local') {
+                    document.getElementById('localFileLoader').classList.remove('hidden');
+                    sociosData = [];
+                    dniSearchInput.disabled = true;
+                    dniSearchInput.placeholder = "Carga un archivo para empezar";
+                } else {
+                    document.getElementById('localFileLoader').classList.add('hidden');
+                    loadFromGoogleSheets();
+                }
+            });
+        });
+
         // --- Función para actualizar los campos de pago ---
         function updatePaymentFields(dni) {
             const socio = sociosData.find(s => s.dni === dni);
