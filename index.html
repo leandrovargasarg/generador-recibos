@@ -196,7 +196,7 @@
                 const csvData = await response.text();
                 const rows = csvData.trim().split('\n');
                 
-                // REPARACION: Se busca dinámicamente la fila de encabezado de los meses y de los campos.
+                // REPARACION: Lógica de lectura de encabezados mejorada
                 let monthHeaderRowIndex = -1;
                 let fieldHeaderRowIndex = -1;
 
@@ -207,19 +207,18 @@
                     }
                     if (upperRow.includes("GRADO") && upperRow.includes("DNI")) {
                         fieldHeaderRowIndex = i;
-                        break;
+                        break; 
                     }
                 }
 
-                if (fieldHeaderRowIndex === -1) {
-                    throw new Error("No se encontró la fila de encabezado ('GRADO', 'DNI', etc.) en la planilla.");
+                if (fieldHeaderRowIndex === -1 || monthHeaderRowIndex === -1) {
+                    throw new Error("No se encontraron las filas de encabezado en la planilla.");
                 }
 
                 const monthHeaderRow = rows[monthHeaderRowIndex].trim().split(',');
                 const fieldHeaderRow = rows[fieldHeaderRowIndex].trim().split(',');
                 const dataStartIndex = fieldHeaderRowIndex + 1;
                 
-                // Mapear los meses a sus columnas correspondientes
                 const monthColumnMap = {};
                 let currentMonth = '';
                 monthHeaderRow.forEach((cell, index) => {
